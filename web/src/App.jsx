@@ -545,7 +545,7 @@ export default function App() {
               <span />
             </div>
             <div className="nav-bar__name">
-              <span className="nav-bar__name-main">Alex R.</span>
+              <span className="nav-bar__name-main">User</span>
             </div>
           </div>
           <button type="button" className="icon-circle icon-circle--ghost icon-circle--notify" aria-label="Notifications" title="Notifications">
