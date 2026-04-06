@@ -189,13 +189,13 @@ function DonutSliceLabel({
         fill="none"
         opacity={0.95}
       />
-      <text x={textX} y={ey - 6} textAnchor={anchor} fill="#f4f6fa" fontSize={17} fontWeight={600}>
+      <text x={textX} y={ey - 6} textAnchor={anchor} fill="#0f172a" fontSize={17} fontWeight={600}>
         {name}
       </text>
-      <text x={textX} y={ey + 18} textAnchor={anchor} fill="#f0d78a" fontSize={15} fontWeight={600}>
+      <text x={textX} y={ey + 18} textAnchor={anchor} fill="#0369a1" fontSize={15} fontWeight={600}>
         {valFmt}
       </text>
-      <text x={textX} y={ey + 39} textAnchor={anchor} fill="#b8c2d4" fontSize={15} fontWeight={500}>
+      <text x={textX} y={ey + 39} textAnchor={anchor} fill="#64748b" fontSize={15} fontWeight={500}>
         {p.toFixed(1)}%
       </text>
     </g>
@@ -212,26 +212,26 @@ export function PriceHistogram({ rows, priceCol }) {
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: 4, bottom: 4 }}>
           <defs>
-            <linearGradient id="priceBarGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#2dd4bf" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#1e4a7a" stopOpacity={1} />
+            <linearGradient id="priceBarGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2dd4bf" stopOpacity={1} />
+              <stop offset="100%" stopColor="#14b8a6" stopOpacity={1} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#3d4663" vertical={false} opacity={0.6} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} opacity={0.9} />
           <XAxis
             dataKey="label"
-            tick={{ fill: '#9aa3b5', fontSize: 11 }}
+            tick={{ fill: '#64748b', fontSize: 11 }}
             tickLine={false}
-            axisLine={{ stroke: '#3d4663' }}
+            axisLine={{ stroke: '#cbd5e1' }}
             interval="preserveStartEnd"
           />
           <YAxis
-            tick={{ fill: '#9aa3b5', fontSize: 11 }}
+            tick={{ fill: '#64748b', fontSize: 11 }}
             tickLine={false}
-            axisLine={{ stroke: '#3d4663' }}
-            label={{ value: 'Item count', angle: -90, position: 'insideLeft', fill: '#7a8499', fontSize: 11 }}
+            axisLine={{ stroke: '#cbd5e1' }}
+            label={{ value: 'Item count', angle: -90, position: 'insideLeft', fill: '#64748b', fontSize: 11 }}
           />
-          <Tooltip content={<HistogramTooltip />} cursor={{ fill: 'rgba(255, 255, 255, 0.07)' }} />
+          <Tooltip content={<HistogramTooltip />} cursor={{ fill: 'rgba(15, 23, 42, 0.06)' }} />
           <Bar dataKey="count" fill="url(#priceBarGrad)" radius={[4, 4, 0, 0]} maxBarSize={44} name="Items" />
         </BarChart>
       </ResponsiveContainer>
@@ -258,7 +258,7 @@ export function CategoryDonut({ rows, categoryCol, priceCol }) {
             outerRadius="70%"
             paddingAngle={3}
             cornerRadius={2}
-            stroke="#1a1f2b"
+            stroke="#ffffff"
             strokeWidth={2}
             label={DonutSliceLabel}
             labelLine={false}
@@ -280,7 +280,7 @@ export function StockHealthGauge({ pct }) {
   const arcColor = gaugeArcColor(safe)
   const data = [
     { name: 'in', value: safe, fill: arcColor },
-    { name: 'out', value: rest, fill: '#3d4558' },
+    { name: 'out', value: rest, fill: '#e2e8f0' },
   ]
   const tone = gaugeTone(safe)
   return (

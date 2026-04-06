@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import * as XLSX from 'xlsx'
 import { CategoryDonut, PriceHistogram, StockHealthGauge } from './AnalyticsCharts.jsx'
+import { OneDrivePickerCancelled, pickOneDriveFile } from './onedrivePicker.js'
 import './App.css'
+
+const ONEDRIVE_CLIENT_ID = import.meta.env.VITE_ONEDRIVE_CLIENT_ID || ''
+const ONEDRIVE_REDIRECT_URI = import.meta.env.VITE_ONEDRIVE_REDIRECT_URI || ''
 
 const ACCEPT = '.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv'
 
@@ -49,21 +53,16 @@ const INVENTORY_SEVEN_PRIORITY = [
   ['Last_Updated', 'Last Updated'],
 ]
 
-function buildSevenColumnKeys(headers, rowFilterId, rowFilterResolved, productIdCol, productNameCol) {
+function buildTableColumnKeys(headers, rowFilterId, rowFilterResolved, productIdCol, productNameCol) {
   if (!headers.length) return Array(7).fill(null)
   const priorityCols = [
     ...new Set(INVENTORY_SEVEN_PRIORITY.map((c) => resolveColumn(c, headers)).filter(Boolean)),
   ]
-  let cols = []
+  /** Focused table view: only Product ID, Product Name, and the selected dimension — no extra columns. */
   if (rowFilterId && rowFilterResolved && productIdCol && productNameCol) {
-    cols = [productIdCol, productNameCol, rowFilterResolved]
-    for (const c of priorityCols) {
-      if (cols.length >= 7) break
-      if (!cols.includes(c)) cols.push(c)
-    }
-  } else {
-    cols = priorityCols.slice(0, 7)
+    return [productIdCol, productNameCol, rowFilterResolved]
   }
+  let cols = priorityCols.slice(0, 7)
   while (cols.length < 7) {
     const next = headers.find((h) => !cols.includes(h))
     if (next) cols.push(next)
@@ -96,8 +95,8 @@ function MiniSparkline({ n }) {
     <svg className="kpi-sparkline" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden>
       <defs>
         <linearGradient id="sparkGlow" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#2dd4bf" stopOpacity={0.35} />
-          <stop offset="100%" stopColor="#2dd4bf" stopOpacity={0} />
+          <stop offset="0%" stopColor="#34d399" stopOpacity={0.45} />
+          <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
         </linearGradient>
       </defs>
       <path
@@ -108,7 +107,7 @@ function MiniSparkline({ n }) {
       <path
         d={pathD}
         fill="none"
-        stroke="#2dd4bf"
+        stroke="#10b981"
         strokeWidth="2"
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
@@ -140,20 +139,24 @@ function sliceDimsAllowedForRowView(rowFilterId) {
   return []
 }
 
-async function parseFileToRows(file) {
-  const lower = file.name.toLowerCase()
+function parseBufferToRows(arrayBuffer, name) {
+  const lower = name.toLowerCase()
   let workbook
   if (lower.endsWith('.csv')) {
-    const text = await file.text()
+    const text = new TextDecoder('utf-8').decode(arrayBuffer)
     workbook = XLSX.read(text, { type: 'string' })
   } else {
-    const buf = await file.arrayBuffer()
-    workbook = XLSX.read(buf, { type: 'array' })
+    workbook = XLSX.read(arrayBuffer, { type: 'array' })
   }
   const sheetName = workbook.SheetNames[0]
   if (!sheetName) return []
   const sheet = workbook.Sheets[sheetName]
   return XLSX.utils.sheet_to_json(sheet, { defval: '' })
+}
+
+async function parseFileToRows(file) {
+  const buf = await file.arrayBuffer()
+  return parseBufferToRows(buf, file.name)
 }
 
 const ROW_H = 36
@@ -183,9 +186,12 @@ export default function App() {
   const [dimFieldId, setDimFieldId] = useState('')
   const [dimValue, setDimValue] = useState('')
   const [globalSearch, setGlobalSearch] = useState('')
+  const [dataUpdatedAt, setDataUpdatedAt] = useState(null)
+  const [soloColumnKey, setSoloColumnKey] = useState(null)
 
   const scrollRef = useRef(null)
   const fileInputRef = useRef(null)
+  const globalSearchRef = useRef(null)
 
   const headers = useMemo(() => {
     if (!rows.length) return []
@@ -322,17 +328,81 @@ export default function App() {
     return { criticalStockouts, overstockSkus, reorderAlerts }
   }, [displayRows, statusCol, stockCol])
 
-  const displayHeaders = useMemo(
+  const baseDisplayHeaders = useMemo(
     () =>
-      buildSevenColumnKeys(headers, rowFilterId, rowFilterResolved, productIdCol, productNameCol),
+      buildTableColumnKeys(headers, rowFilterId, rowFilterResolved, productIdCol, productNameCol),
     [headers, rowFilterId, rowFilterResolved, productIdCol, productNameCol],
   )
 
-  const gridTemplate = 'repeat(7, minmax(0, 1fr))'
+  useEffect(() => {
+    if (soloColumnKey && !baseDisplayHeaders.includes(soloColumnKey)) {
+      setSoloColumnKey(null)
+    }
+  }, [baseDisplayHeaders, soloColumnKey])
+
+  const displayHeaders = useMemo(() => {
+    if (soloColumnKey && baseDisplayHeaders.includes(soloColumnKey)) {
+      return [soloColumnKey]
+    }
+    return baseDisplayHeaders
+  }, [baseDisplayHeaders, soloColumnKey])
+
+  const gridTemplate = useMemo(() => {
+    const n = displayHeaders.length
+    return `repeat(${n}, minmax(0, 1fr))`
+  }, [displayHeaders])
 
   const inventoryValueDelta = kpis.value - kpis.sliceValue
   const showInventoryDelta =
     priceCol && kpis.sliceValue > 0 && Math.abs(inventoryValueDelta) > 1e-6
+
+  const rowCoveragePct = rows.length ? (displayRows.length / rows.length) * 100 : 100
+  const totalRowsSub =
+    displayRows.length === rows.length ? 'Full file' : 'After filters'
+  const totalRowsTrend = `${rowCoveragePct.toFixed(1)}% of file rows`
+
+  const onHeaderClick = useCallback((h) => {
+    if (!h) return
+    setSoloColumnKey((prev) => (prev === h ? null : h))
+  }, [])
+
+  const clearSoloColumn = useCallback(() => setSoloColumnKey(null), [])
+
+  const loadFromOneDrive = useCallback(async () => {
+    if (!ONEDRIVE_CLIENT_ID) return
+    setError(null)
+    setLoading(true)
+    try {
+      const { name, size, buffer } = await pickOneDriveFile(
+        ONEDRIVE_CLIENT_ID,
+        ONEDRIVE_REDIRECT_URI || undefined,
+      )
+      setRowFilterId(null)
+      setDimFieldId('')
+      setDimValue('')
+      setGlobalSearch('')
+      setSoloColumnKey(null)
+      setFileName(name)
+      setFileSize(size ?? buffer.byteLength)
+      const data = parseBufferToRows(buffer, name)
+      if (!Array.isArray(data) || data.length === 0) {
+        setRows([])
+        setError('No rows found (empty sheet or unreadable file).')
+        return
+      }
+      setRows(data)
+      setDataUpdatedAt(new Date())
+    } catch (err) {
+      if (err instanceof OneDrivePickerCancelled) {
+        setError(null)
+      } else {
+        console.error(err)
+        setError(err instanceof Error ? err.message : 'OneDrive failed.')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   const onFile = useCallback(async (e) => {
     const file = e.target.files?.[0]
@@ -346,6 +416,7 @@ export default function App() {
     setDimFieldId('')
     setDimValue('')
     setGlobalSearch('')
+    setSoloColumnKey(null)
     try {
       const data = await parseFileToRows(file)
       if (!Array.isArray(data) || data.length === 0) {
@@ -354,6 +425,7 @@ export default function App() {
         return
       }
       setRows(data)
+      setDataUpdatedAt(new Date())
     } catch (err) {
       console.error(err)
       setRows([])
@@ -372,6 +444,8 @@ export default function App() {
     setDimFieldId('')
     setDimValue('')
     setGlobalSearch('')
+    setDataUpdatedAt(null)
+    setSoloColumnKey(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
@@ -427,9 +501,21 @@ export default function App() {
               )}
             </span>
           </div>
-          <button type="button" className="btn btn--outline" onClick={clearFile}>
-            Remove file
-          </button>
+          <div className="file-strip__actions">
+            {ONEDRIVE_CLIENT_ID ? (
+              <button
+                type="button"
+                className="btn btn--outline"
+                onClick={loadFromOneDrive}
+                disabled={loading}
+              >
+                {loading ? 'Opening…' : 'Open from OneDrive'}
+              </button>
+            ) : null}
+            <button type="button" className="btn btn--outline" onClick={clearFile}>
+              Remove file
+            </button>
+          </div>
         </div>
       )}
 
@@ -438,20 +524,20 @@ export default function App() {
           <span className="nav-bar__logo">D</span>
           <div>
             <div className="nav-bar__title">DataView Pro</div>
-            <div className="nav-bar__subtitle">Inventory Analysis</div>
+            <div className="nav-bar__subtitle">Inventory analysis.</div>
           </div>
         </div>
         <div className="nav-bar__user">
-          <button type="button" className="icon-circle icon-circle--ghost" aria-label="Voice" title="Voice">
+          <button
+            type="button"
+            className="icon-circle icon-circle--ghost"
+            aria-label="Search"
+            title="Search"
+            onClick={() => globalSearchRef.current?.focus()}
+          >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z" />
-              <path d="M19 11a7 7 0 0 1-14 0M12 18v3" />
-            </svg>
-          </button>
-          <button type="button" className="icon-circle icon-circle--ghost" aria-label="Settings" title="Settings">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
             </svg>
           </button>
           <div className="nav-bar__profile">
@@ -460,9 +546,19 @@ export default function App() {
             </div>
             <div className="nav-bar__name">
               <span className="nav-bar__name-main">Alex R.</span>
-              <span className="nav-bar__name-role">Analyst</span>
             </div>
           </div>
+          <button type="button" className="icon-circle icon-circle--ghost icon-circle--notify" aria-label="Notifications" title="Notifications">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+          </button>
+          <button type="button" className="icon-circle icon-circle--ghost" aria-label="Help" title="Help">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -472,17 +568,39 @@ export default function App() {
             <div className="empty-hero__card">
               <h1 className="empty-hero__h">Open your inventory file</h1>
               <p className="empty-hero__p">
-                CSV or Excel. You will get breakdowns, a price histogram, and a fast virtualized table
-                that stays smooth on tens of thousands of rows.
+                CSV or Excel from this device or from OneDrive. You will get breakdowns, a price histogram,
+                and a fast virtualized table that stays smooth on tens of thousands of rows.
               </p>
-              <button
-                type="button"
-                className="btn btn--primary"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={loading}
-              >
-                {loading ? 'Reading…' : 'Choose file'}
-              </button>
+              <div className="empty-hero__actions">
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={loading}
+                >
+                  {loading ? 'Reading…' : 'Choose file'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--outline"
+                  onClick={loadFromOneDrive}
+                  disabled={loading || !ONEDRIVE_CLIENT_ID}
+                  title={
+                    ONEDRIVE_CLIENT_ID
+                      ? 'Pick a file from OneDrive or SharePoint'
+                      : 'Set VITE_ONEDRIVE_CLIENT_ID in .env (Azure app registration)'
+                  }
+                >
+                  OneDrive
+                </button>
+              </div>
+              {!ONEDRIVE_CLIENT_ID && (
+                <p className="empty-hero__hint">
+                  OneDrive: set <code className="empty-hero__code">VITE_ONEDRIVE_CLIENT_ID</code> in{' '}
+                  <code className="empty-hero__code">.env</code> and register the redirect URI in Azure
+                  (same origin as this app).
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -511,9 +629,13 @@ export default function App() {
                     ↑
                   </span>
                 </div>
+                <p className="kpi__sub">{totalRowsSub}</p>
                 <div className="kpi__spark-wrap">
                   <MiniSparkline n={kpis.n} />
                 </div>
+                <p className="kpi__trend-line">
+                  <span className="kpi__trend kpi__trend--up">{totalRowsTrend}</span>
+                </p>
                 <p className="kpi__footer-metric">
                   Active SKUs: <strong>{kpis.activeSkus.toLocaleString()}</strong>
                 </p>
@@ -535,10 +657,10 @@ export default function App() {
                     <span className="kpi__compare-hint"> vs slice (search)</span>
                   </p>
                 ) : (
-                  <p className="kpi__hint">Sum of unit prices · visible rows</p>
+                  <p className="kpi__hint">Sum of price (visible rows)</p>
                 )}
                 <p className="kpi__footer-metric">
-                  Pending orders: <strong>{formatCurrencyCompact(kpis.pendingOrders)}</strong>
+                  Pending Orders: <strong>{formatCurrencyCompact(kpis.pendingOrders)}</strong>
                 </p>
               </article>
               <article className="kpi kpi--gauge">
@@ -547,7 +669,7 @@ export default function App() {
                 <div className="kpi-health-grid" aria-label="Stock health breakdown">
                   <div>
                     <span className="kpi-health-grid__n">{healthMetrics.criticalStockouts}</span>
-                    <span className="kpi-health-grid__l">Critical stockouts</span>
+                    <span className="kpi-health-grid__l">Critical Stockouts</span>
                   </div>
                   <div>
                     <span className="kpi-health-grid__n">{healthMetrics.overstockSkus}</span>
@@ -555,7 +677,7 @@ export default function App() {
                   </div>
                   <div>
                     <span className="kpi-health-grid__n">{healthMetrics.reorderAlerts}</span>
-                    <span className="kpi-health-grid__l">Reorder alerts</span>
+                    <span className="kpi-health-grid__l">Reorder Alerts</span>
                   </div>
                 </div>
               </article>
@@ -591,10 +713,11 @@ export default function App() {
                         </svg>
                       </span>
                       <input
+                        ref={globalSearchRef}
                         id="global-search"
                         type="search"
                         className="input input--search"
-                        placeholder="Search this table…"
+                        placeholder="Search this table..."
                         value={globalSearch}
                         onChange={(e) => setGlobalSearch(e.target.value)}
                         autoComplete="off"
@@ -702,7 +825,14 @@ export default function App() {
             <section className="panel panel--table" aria-label="Data table">
               <div className="table-head">
                 <h2 className="panel__title panel__title--sm">Inventory detail</h2>
-                <span className="virt-pill">Virtualized rows</span>
+                <div className="table-head__right">
+                  {soloColumnKey && (
+                    <button type="button" className="btn btn--outline btn--sm" onClick={clearSoloColumn}>
+                      All columns
+                    </button>
+                  )}
+                  <span className="virt-pill">Virtualized rows</span>
+                </div>
               </div>
               <div className="table-scroll">
                 <div
@@ -711,7 +841,21 @@ export default function App() {
                   role="row"
                 >
                   {displayHeaders.map((h, i) => (
-                    <div key={h ?? `empty-${i}`} className="th" role="columnheader">
+                    <div
+                      key={h ?? `empty-${i}`}
+                      className={`th ${h ? 'th--interactive' : ''} ${soloColumnKey === h ? 'th--active' : ''}`}
+                      role="columnheader"
+                      onClick={() => onHeaderClick(h)}
+                      onKeyDown={(e) => {
+                        if (!h) return
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          onHeaderClick(h)
+                        }
+                      }}
+                      tabIndex={h ? 0 : undefined}
+                      title={h ? 'Click: this column only · again: all columns' : undefined}
+                    >
                       {h ?? '—'}
                     </div>
                   ))}
@@ -761,15 +905,26 @@ export default function App() {
               </div>
             </section>
 
-            <p className="footer-hint">
-              Showing {displayRows.length.toLocaleString()} rows
-              {displayRows.length !== rows.length && (
-                <>
-                  {' '}
-                  · {rows.length.toLocaleString()} in file
-                </>
-              )}
-            </p>
+            <div className="footer-row">
+              <p className="footer-hint">
+                Showing {displayRows.length.toLocaleString()} rows
+                {displayRows.length !== rows.length && (
+                  <>
+                    {' '}
+                    · {rows.length.toLocaleString()} in file
+                  </>
+                )}
+              </p>
+              <p className="footer-updated">
+                Data updated
+                {dataUpdatedAt
+                  ? `: ${dataUpdatedAt.toLocaleString(undefined, {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    })}`
+                  : ''}
+              </p>
+            </div>
           </>
         ) : null}
       </main>
